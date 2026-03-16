@@ -30,6 +30,9 @@ public final class ShinySparkleDetector {
         public int minBrightPixelsPerBurst = 8;
         public int maxBrightPixelsPerBurst = 300;
 
+        public int minClusterCount = 1;
+        public double minBurstScore = 0.0;
+
         public int minSparkleEvents = 3;
         public double decisionThreshold = 1.0;
 
@@ -223,13 +226,17 @@ public final class ShinySparkleDetector {
         boolean isReasonableBurst =
                 brightChangedPixels >= config.minBrightPixelsPerBurst &&
                 brightChangedPixels <= config.maxBrightPixelsPerBurst &&
-                clusterCount >= 1;
+                clusterCount >= config.minClusterCount;
 
         double densityScore = Math.min(1.0, brightChangedPixels / 40.0);
         double clusterScore = Math.min(1.0, clusterCount / 3.0);
         double burstBonus = isReasonableBurst ? 0.75 : 0.0;
 
         double score = densityScore + clusterScore + burstBonus;
+
+        if (score < config.minBurstScore) {
+            isReasonableBurst = false;
+        }
 
         return new FrameAnalysis(
                 brightChangedPixels,
