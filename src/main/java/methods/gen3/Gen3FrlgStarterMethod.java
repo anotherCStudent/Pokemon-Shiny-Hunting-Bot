@@ -16,6 +16,7 @@ import javax.swing.SwingUtilities;
 
 import app.AppState;
 import core.KeySender;
+import core.TargetPlatform;
 import methods.HuntMethod;
 import vision.FrlgSpriteLoader;
 import vision.match.TemplateMatcher;
@@ -33,7 +34,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
     // Common startup timings
     private static final long DELAY_MS = 5000;
-    private static final long B_SPAM_START_MS = 10_000;
+    private static final long B_SPAM_START_MS = 6000; //was 10000
 
     // FRLG starter timings
     private static final long A_MASH_MS = 3200;
@@ -88,8 +89,8 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private static final long SQUIRTLE_POST_DETECTION_RESET_DELAY_MS = 1000;
 
     // Debug output
-    private static final boolean DEBUG_SAVE_CHECK_FRAMES = true;
-    private static final boolean DEBUG_SAVE_TEMPLATES = true;
+    private static final boolean DEBUG_SAVE_CHECK_FRAMES = false;
+    private static final boolean DEBUG_SAVE_TEMPLATES = false;
     private static final boolean DEBUG_VERBOSE_SCORES = true;
 
     // Non-Squirtle summary templates
@@ -122,12 +123,32 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         sparkleConfig.frameDelayMs = 50;
         sparkleConfig.brightnessJumpThreshold = 45;
         sparkleConfig.absoluteBrightThreshold = 180;
-        sparkleConfig.minBrightPixelsPerBurst = 8;
         sparkleConfig.maxBrightPixelsPerBurst = 600;
         sparkleConfig.minSparkleEvents = 3;
-        sparkleConfig.decisionThreshold = 0.90;
         sparkleConfig.debug = true;
-        sparkleConfig.saveDebugFrames = true;
+        sparkleConfig.saveDebugFrames = false;
+
+        boolean switchMode = false;
+        try {
+            switchMode = state.getTargetPlatform() == TargetPlatform.NINTENDO_SWITCH;
+        } catch (Throwable ignored) {
+            // If platform state isn't available for some reason, fall back to emulator tuning.
+        }
+
+        if (switchMode) {
+            // Stricter sparkle filtering for Switch capture-card noise
+            sparkleConfig.minBrightPixelsPerBurst = 90;
+            sparkleConfig.minClusterCount = 2;
+            sparkleConfig.minBurstScore = 2.20;
+            sparkleConfig.decisionThreshold = 1.40;
+        } else {
+            // Original emulator-friendly behavior
+            sparkleConfig.minBrightPixelsPerBurst = 8;
+            sparkleConfig.minClusterCount = 1;
+            sparkleConfig.minBurstScore = 0.0;
+            sparkleConfig.decisionThreshold = 0.90;
+        }
+
         this.squirtleSparkleDetector = new ShinySparkleDetector(sparkleConfig);
 
         this.debugRootDir = projectDir.resolve("debug").resolve("frlg-starter");
@@ -192,7 +213,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             if (!running.get()) break;
             keys.pressA();
 
-            mashBFor(B_SPAM_START_MS);
+            mashAFor(B_SPAM_START_MS); // Was mash b for 9s in old method.
             if (!running.get()) break;
 
             mashAFor(A_MASH_MS);
