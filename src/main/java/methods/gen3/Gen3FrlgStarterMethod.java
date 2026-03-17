@@ -48,6 +48,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
     // Controlled mash rate
     private static final long TAP_GAP_MS = 70;
+    private static final long RESET_SEED_STEP_MS = 17;
 
     // Summary-screen shiny check window
     private static final int CHECK_FRAME_COUNT = 6;
@@ -101,6 +102,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
     private final Path debugRootDir;
     private int attemptCounter = 0;
+    private int resetFrameOffsetCount = 0;
 
     public Gen3FrlgStarterMethod(KeySender keys, AppState state, int pokedexNumber) {
         this.keys = keys;
@@ -209,6 +211,12 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             if (!running.get()) break;
             keys.pressStart();
 
+            long resetSeedDelayMs = resetFrameOffsetCount * RESET_SEED_STEP_MS;
+            if (resetSeedDelayMs > 0) {
+                log("Applying reset seed offset delay: " + resetSeedDelayMs + " ms (" + resetFrameOffsetCount + " frame steps)");
+                keys.sleepMs(resetSeedDelayMs);
+            }
+
             keys.sleepMs(DELAY_MS);
             if (!running.get()) break;
             keys.pressA();
@@ -248,6 +256,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
                 log("Squirtle sparkle route did not confirm shiny. Soft resetting.");
                 keys.softReset();
+                resetFrameOffsetCount++;
                 keys.sleepMs(SQUIRTLE_POST_DETECTION_RESET_DELAY_MS);
                 continue;
             }
@@ -300,6 +309,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             if (result.decision == Decision.NOT_SHINY) {
                 log("Not shiny with sufficient confidence. Soft resetting.");
                 keys.softReset();
+                resetFrameOffsetCount++;
                 keys.sleepMs(1500);
                 continue;
             }
@@ -309,6 +319,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             if (!running.get()) break;
 
             keys.softReset();
+            resetFrameOffsetCount++;
             keys.sleepMs(1500);
         }
     }
