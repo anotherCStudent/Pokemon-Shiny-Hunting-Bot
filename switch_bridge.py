@@ -157,6 +157,7 @@ class NxbtBridge:
                 self._resolve_button("PLUS"),
                 self._resolve_button("MINUS"),
                 self._resolve_button("A"),
+                self._resolve_button("B"),
             ]
             self.nx.press_buttons(self.controller_index, buttons, down=down, up=up)
 
