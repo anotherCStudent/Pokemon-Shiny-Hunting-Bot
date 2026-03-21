@@ -28,7 +28,6 @@ public class FrameChangeDetector {
         long changed = 0;
         long total = (long) w * h;
 
-        // Sample stride so we don’t melt CPU (still whole-screen, just sampled)
         int stride = 2;
 
         for (int y = 0; y < h; y += stride) {
