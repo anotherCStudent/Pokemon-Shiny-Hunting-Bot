@@ -25,7 +25,6 @@ public class Gen3FrlgSpriteHatchDetector {
     private final BufferedImage normalTemplate;
     private final BufferedImage shinyTemplate;
 
-    // tune these if needed
     private final double matchThreshold;       // e.g. 0.88
     private final int stride;                  // e.g. 3 (higher = faster, less accurate)
     private final double hatchChangeThreshold; // e.g. 0.16 (16% pixels changed)
@@ -59,7 +58,7 @@ public class Gen3FrlgSpriteHatchDetector {
         lastFrame = null;
     }
 
-    /** Capture + detect. Call this repeatedly from your method loop. */
+    /** Capture + detect. */
     public HatchDetectionResult detect() {
     BufferedImage frame = state.getFrameSourceOrThrow().capture();
 
@@ -90,7 +89,7 @@ public class Gen3FrlgSpriteHatchDetector {
         long changed = 0;
         long sampled = 0;
 
-        int s = 2; // sampling stride for speed; still checks whole capture area
+        int s = 2; 
         for (int y = 0; y < h; y += s) {
             for (int x = 0; x < w; x += s) {
                 int a = lastFrame.getRGB(x, y);
