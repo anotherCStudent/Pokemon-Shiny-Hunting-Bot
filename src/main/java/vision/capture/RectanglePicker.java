@@ -51,8 +51,6 @@ public final class RectanglePicker {
     // Toggle this to silence logs without deleting them.
     private static final boolean DEBUG = true;
 
-    // If you ever want a safety timeout while debugging (0 disables).
-    // Leaving at 0 by default so it behaves like your current code: wait forever until user acts.
     private static final long WAIT_TIMEOUT_MS = 0;
 
     // Wait loop tick
@@ -198,7 +196,7 @@ public final class RectanglePicker {
         while (result.get() == null) {
             long c = loops.incrementAndGet();
 
-            // Timeout (optional)
+            // Timeout 
             if (WAIT_TIMEOUT_MS > 0) {
                 long elapsed = System.currentTimeMillis() - startWait;
                 if (elapsed >= WAIT_TIMEOUT_MS) {
@@ -249,7 +247,7 @@ public final class RectanglePicker {
         Rectangle r = result.get();
         log("WAIT LOOP: result became non-null -> " + rectToString(r));
 
-        // Remove dispatcher once we’re done (best effort).
+        // Remove dispatcher (best effort).
         tryRemoveDispatcher(dispatcher);
 
         if (r == SelectionPane.CANCEL_SENTINEL) {
