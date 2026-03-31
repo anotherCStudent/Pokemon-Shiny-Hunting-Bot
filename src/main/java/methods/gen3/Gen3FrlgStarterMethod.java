@@ -89,6 +89,13 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private static final long SQUIRTLE_SPARKLE_START_DELAY_MS = 300;
     private static final long SQUIRTLE_POST_DETECTION_RESET_DELAY_MS = 1000;
 
+    // Fallback quick re-check if black screen is missed the first time
+    private static final long SQUIRTLE_BLACK_SCREEN_RECHECK_TIMEOUT_MS = 1200;
+    private static final int SQUIRTLE_FALLBACK_POST_INTRO_A_MASH_MS = 1200;
+
+    // If battle-scene detection still fails, continue anyway instead of resetting early
+    private static final boolean SQUIRTLE_ALWAYS_PROCEED_TO_SPARKLE_CHECK = true;
+
     // Debug output
     private static final boolean DEBUG_SAVE_CHECK_FRAMES = true;
     private static final boolean DEBUG_SAVE_TEMPLATES = true;
@@ -335,8 +342,6 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         }
     }
 
-    // --- rest of file unchanged (your paste continues) ---
-
     private SquirtleSparkleRouteResult runSquirtleBattleRoute(Path attemptDir) {
         keys.holdDown(1500);
         keys.sleepMs(WAIT_500);
@@ -364,24 +369,36 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         log("Squirtle sparkle route: watching for black transition.");
 
         BlackScreenWatchResult blackResult = waitForBattleTransitionBlackScreen(attemptDir);
-        if (!blackResult.detected) {
-            log("Squirtle sparkle route: black transition not detected in time.");
-            return new SquirtleSparkleRouteResult(
-                    Decision.NO_DECISION,
-                    false,
-                    false,
-                    0.0,
-                    0.0,
-                    null
-            );
-        }
 
-        log(String.format(
-                Locale.US,
-                "Squirtle sparkle route: black transition detected | frame=%d | avgBrightness=%.2f",
-                blackResult.frameIndex,
-                blackResult.averageBrightness
-        ));
+        if (!blackResult.detected) {
+            log("Squirtle sparkle route: black transition not detected on first pass. Doing quick re-check.");
+
+            mashAFor(SQUIRTLE_FALLBACK_POST_INTRO_A_MASH_MS);
+            if (!running.get()) {
+                return SquirtleSparkleRouteResult.noDecision();
+            }
+
+            BlackScreenWatchResult retryBlackResult = waitForBattleTransitionBlackScreenQuick(attemptDir);
+
+            if (retryBlackResult.detected) {
+                blackResult = retryBlackResult;
+                log(String.format(
+                        Locale.US,
+                        "Squirtle sparkle route: black transition detected on retry | frame=%d | avgBrightness=%.2f",
+                        blackResult.frameIndex,
+                        blackResult.averageBrightness
+                ));
+            } else {
+                log("Squirtle sparkle route: black transition still not detected. Continuing anyway to avoid early reset.");
+            }
+        } else {
+            log(String.format(
+                    Locale.US,
+                    "Squirtle sparkle route: black transition detected | frame=%d | avgBrightness=%.2f",
+                    blackResult.frameIndex,
+                    blackResult.averageBrightness
+            ));
+        }
 
         advanceSquirtleBattlePastIntro();
         if (!running.get()) {
@@ -391,23 +408,28 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         BattleSceneWatchResult sceneResult = waitForBattleSceneVisible(attemptDir, blackResult.referenceFrame);
         if (!sceneResult.detected) {
             log("Squirtle sparkle route: battle scene not detected after post-scene advance.");
-            return new SquirtleSparkleRouteResult(
-                    Decision.NO_DECISION,
-                    true,
-                    false,
-                    sceneResult.averageBrightness,
-                    sceneResult.changedRatio,
-                    null
-            );
-        }
 
-        log(String.format(
-                Locale.US,
-                "Squirtle sparkle route: battle scene detected AFTER post-scene advance | frame=%d | avgBrightness=%.2f | changedRatio=%.4f",
-                sceneResult.frameIndex,
-                sceneResult.averageBrightness,
-                sceneResult.changedRatio
-        ));
+            if (!SQUIRTLE_ALWAYS_PROCEED_TO_SPARKLE_CHECK) {
+                return new SquirtleSparkleRouteResult(
+                        Decision.NO_DECISION,
+                        blackResult.detected,
+                        false,
+                        sceneResult.averageBrightness,
+                        sceneResult.changedRatio,
+                        null
+                );
+            }
+
+            log("Squirtle sparkle route: proceeding to sparkle detection anyway.");
+        } else {
+            log(String.format(
+                    Locale.US,
+                    "Squirtle sparkle route: battle scene detected AFTER post-scene advance | frame=%d | avgBrightness=%.2f | changedRatio=%.4f",
+                    sceneResult.frameIndex,
+                    sceneResult.averageBrightness,
+                    sceneResult.changedRatio
+            ));
+        }
 
         advanceFromBattleSceneToPokemonReveal();
         if (!running.get()) {
@@ -455,8 +477,8 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
         return new SquirtleSparkleRouteResult(
                 finalDecision,
-                true,
-                true,
+                blackResult.detected,
+                sceneResult.detected,
                 sceneResult.averageBrightness,
                 sceneResult.changedRatio,
                 sparkleResult
@@ -524,6 +546,49 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             if (black) {
                 consecutiveBlackFrames++;
                 if (consecutiveBlackFrames >= SQUIRTLE_BLACK_SCREEN_REQUIRED_CONSECUTIVE) {
+                    return new BlackScreenWatchResult(true, frame, frameIndex, avgBrightness);
+                }
+            } else {
+                consecutiveBlackFrames = 0;
+            }
+
+            keys.sleepMs(SQUIRTLE_BLACK_SCREEN_SAMPLE_GAP_MS);
+        }
+
+        return BlackScreenWatchResult.notDetected();
+    }
+
+    private BlackScreenWatchResult waitForBattleTransitionBlackScreenQuick(Path attemptDir) {
+        long deadline = System.currentTimeMillis() + SQUIRTLE_BLACK_SCREEN_RECHECK_TIMEOUT_MS;
+        int consecutiveBlackFrames = 0;
+        int frameIndex = 0;
+
+        while (running.get() && System.currentTimeMillis() < deadline) {
+            keys.pressB();
+            BufferedImage frame = state.getFrameSourceOrThrow().capture();
+            frameIndex++;
+
+            double avgBrightness = averageBrightness(frame);
+            boolean black = avgBrightness <= SQUIRTLE_BLACK_SCREEN_BRIGHTNESS_THRESHOLD;
+
+            if (DEBUG_VERBOSE_SCORES) {
+                log(String.format(
+                        Locale.US,
+                        "Squirtle black-recheck frame %d | avgBrightness=%.2f | black=%s | consecutive=%d",
+                        frameIndex,
+                        avgBrightness,
+                        black,
+                        black ? (consecutiveBlackFrames + 1) : 0
+                ));
+            }
+
+            if (DEBUG_SAVE_CHECK_FRAMES) {
+                saveBlackWatchFrame(attemptDir, frame, frameIndex, avgBrightness, black);
+            }
+
+            if (black) {
+                consecutiveBlackFrames++;
+                if (consecutiveBlackFrames >= 1) {
                     return new BlackScreenWatchResult(true, frame, frameIndex, avgBrightness);
                 }
             } else {
