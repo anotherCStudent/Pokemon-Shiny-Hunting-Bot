@@ -36,6 +36,29 @@ public final class ShinySparkleDetector {
         public int minSparkleEvents = 3;
         public double decisionThreshold = 1.0;
 
+        /**
+         * Ignore burst counting / streak counting / score accumulation for pairs
+         * strictly before this pair index (1-based, matches log "pair=" indexing).
+         *
+         * Example: ignorePairsBefore=12 means pairs 1..11 are ignored.
+         */
+        public int ignorePairsBefore = 0;
+
+        /**
+         * Require at least this many consecutive (effective) bursts to consider shiny.
+         * Set <= 0 to disable.
+         */
+        public int minConsecutiveBursts = 0;
+
+        /**
+         * If true, the consecutive-burst rule is a hard gate:
+         * - Switch: you want this ON (end-all rule)
+         *
+         * If false, the consecutive-burst rule is NOT a hard gate:
+         * - GBA: you want this OFF (still measured/logged, but won't block a shiny)
+         */
+        public boolean consecutiveRuleIsHardGate = true;
+
         public boolean debug = true;
 
         /** If true, saves cropped frames and masks for debugging */
@@ -75,8 +98,15 @@ public final class ShinySparkleDetector {
         }
 
         int sparkleEvents = 0;
+
+        // We keep rawPairs for logging ("pair="), but only "consideredPairs" affect the score/decision
+        int rawPairs = 0;
+        int consideredPairs = 0;
+
         double totalScore = 0.0;
-        int analyzedPairs = 0;
+
+        int consecutiveBursts = 0;
+        int maxConsecutiveBursts = 0;
 
         BufferedImage previousFrame = null;
         int savedFrameIndex = 0;
@@ -99,16 +129,36 @@ public final class ShinySparkleDetector {
                 BufferedImage previousCrop = safeCrop(previousFrame, roi);
                 if (previousCrop != null) {
                     FrameAnalysis analysis = analyzeFramePair(previousCrop, currentCrop);
-                    analyzedPairs++;
-                    totalScore += analysis.score;
 
-                    if (analysis.isSparkleBurst) {
-                        sparkleEvents++;
+                    rawPairs++;
+
+                    // Decide whether this pair is "eligible" for counting/scoring
+                    boolean eligible = config.ignorePairsBefore <= 0 || rawPairs >= config.ignorePairsBefore;
+
+                    // Effective burst is only counted if eligible
+                    boolean effectiveBurst = eligible && analysis.isSparkleBurst;
+
+                    if (eligible) {
+                        consideredPairs++;
+                        totalScore += analysis.score;
+
+                        if (effectiveBurst) {
+                            sparkleEvents++;
+                            consecutiveBursts++;
+                            if (consecutiveBursts > maxConsecutiveBursts) {
+                                maxConsecutiveBursts = consecutiveBursts;
+                            }
+                        } else {
+                            consecutiveBursts = 0;
+                        }
+                    } else {
+                        // ignored pairs do not affect streak
+                        // (do not reset consecutiveBursts so the streak is purely based on eligible pairs)
                     }
 
                     if (config.debug) {
                         System.out.println(
-                                "[SparkleDetector] pair=" + analyzedPairs +
+                                "[SparkleDetector] pair=" + rawPairs +
                                 " brightPixels=" + analysis.brightChangedPixels +
                                 " clusters=" + analysis.clusterCount +
                                 " score=" + String.format("%.3f", analysis.score) +
@@ -120,7 +170,7 @@ public final class ShinySparkleDetector {
                         saveImage(
                                 debugDir.resolve(String.format(
                                         "sparkle_mask_%02d__bright_%d__clusters_%d__score_%.3f__burst_%s.png",
-                                        analyzedPairs,
+                                        rawPairs,
                                         analysis.brightChangedPixels,
                                         analysis.clusterCount,
                                         analysis.score,
@@ -136,15 +186,26 @@ public final class ShinySparkleDetector {
             savedFrameIndex++;
         }
 
-        double normalizedScore = analyzedPairs == 0 ? 0.0 : totalScore / analyzedPairs;
+        double normalizedScore = consideredPairs == 0 ? 0.0 : totalScore / consideredPairs;
 
-        boolean likelyShiny =
+        boolean meetsConsecutiveRule =
+                config.minConsecutiveBursts <= 0 || maxConsecutiveBursts >= config.minConsecutiveBursts;
+
+        boolean baseLikelyShiny =
                 sparkleEvents >= config.minSparkleEvents &&
                 normalizedScore >= config.decisionThreshold;
 
+        boolean likelyShiny =
+                baseLikelyShiny &&
+                (!config.consecutiveRuleIsHardGate || meetsConsecutiveRule);
+
         String reason =
                 "sparkleEvents=" + sparkleEvents +
-                ", normalizedScore=" + String.format("%.3f", normalizedScore);
+                ", normalizedScore=" + String.format("%.3f", normalizedScore) +
+                ", maxConsecutive=" + maxConsecutiveBursts +
+                ", ignorePairsBefore=" + config.ignorePairsBefore +
+                ", minConsecutiveRequired=" + config.minConsecutiveBursts +
+                ", consecutiveHardGate=" + config.consecutiveRuleIsHardGate;
 
         if (config.debug) {
             System.out.println("[SparkleDetector] FINAL " + reason + ", likelyShiny=" + likelyShiny);

@@ -90,8 +90,8 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private static final long SQUIRTLE_POST_DETECTION_RESET_DELAY_MS = 1000;
 
     // Debug output
-    private static final boolean DEBUG_SAVE_CHECK_FRAMES = false;
-    private static final boolean DEBUG_SAVE_TEMPLATES = false;
+    private static final boolean DEBUG_SAVE_CHECK_FRAMES = true;
+    private static final boolean DEBUG_SAVE_TEMPLATES = true;
     private static final boolean DEBUG_VERBOSE_SCORES = true;
 
     // Non-Squirtle summary templates
@@ -128,7 +128,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         sparkleConfig.maxBrightPixelsPerBurst = 600;
         sparkleConfig.minSparkleEvents = 3;
         sparkleConfig.debug = true;
-        sparkleConfig.saveDebugFrames = false;
+        sparkleConfig.saveDebugFrames = true;
 
         boolean switchMode = false;
         try {
@@ -149,6 +149,17 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             sparkleConfig.minClusterCount = 1;
             sparkleConfig.minBurstScore = 0.0;
             sparkleConfig.decisionThreshold = 0.90;
+        }
+
+        // Platform-specific burst rules (UPDATED):
+        // - Switch: require 3 consecutive bursts (hard gate)
+        // - GBA emulator: require 5 consecutive bursts (harder), DO NOT ignore early pairs
+        sparkleConfig.ignorePairsBefore = 0;
+
+        if (switchMode) {
+            sparkleConfig.minConsecutiveBursts = 3;
+        } else {
+            sparkleConfig.minConsecutiveBursts = 5;
         }
 
         this.squirtleSparkleDetector = new ShinySparkleDetector(sparkleConfig);
@@ -324,6 +335,8 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         }
     }
 
+    // --- rest of file unchanged (your paste continues) ---
+
     private SquirtleSparkleRouteResult runSquirtleBattleRoute(Path attemptDir) {
         keys.holdDown(1500);
         keys.sleepMs(WAIT_500);
@@ -469,15 +482,15 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private void advanceFromBattleSceneToPokemonReveal() {
         log("Squirtle sparkle route: advancing from battle scene to pokemon reveal before sparkle detection.");
 
-        mashAFor(1800);
+        mashAFor(2000);
         if (!running.get()) return;
 
         keys.sleepMs(250);
 
-        mashAFor(1200);
-        if (!running.get()) return;
+        //mashAFor(1200);
+        //if (!running.get()) return;
 
-        keys.sleepMs(300);
+        //keys.sleepMs(300);
     }
 
     private BlackScreenWatchResult waitForBattleTransitionBlackScreen(Path attemptDir) {
