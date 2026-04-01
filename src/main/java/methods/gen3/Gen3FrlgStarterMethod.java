@@ -92,6 +92,17 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private static final long SQUIRTLE_SPARKLE_START_DELAY_MS = 0;
     private static final long SQUIRTLE_POST_DETECTION_RESET_DELAY_MS = 1000;
 
+    // First-pass timing probe:
+    // if Squirtle's released shape is NOT seen after the first sparkle run,
+    // press A once, wait briefly, then rerun sparkle detection.
+    private static final int SQUIRTLE_RETRY_ADVANCE_PRESSES = 1;
+    private static final long SQUIRTLE_RETRY_ADVANCE_GAP_MS = 150;
+    private static final int SQUIRTLE_RELEASE_CHECK_FRAMES = 3;
+    private static final long SQUIRTLE_RELEASE_CHECK_GAP_MS = 80;
+    private static final double SQUIRTLE_RELEASE_SHAPE_COMBINED_THRESHOLD = 0.54;
+    private static final double SQUIRTLE_RELEASE_SHAPE_COLOR_THRESHOLD = 0.48;
+    private static final double SQUIRTLE_RELEASE_SHAPE_GRAY_THRESHOLD = 0.56;
+
     // Fallback quick re-check if black screen is missed the first time
     private static final long SQUIRTLE_BLACK_SCREEN_RECHECK_TIMEOUT_MS = 1200;
     private static final int SQUIRTLE_FALLBACK_POST_INTRO_A_MASH_MS = 1200;
@@ -107,6 +118,9 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     // Non-Squirtle summary templates
     private final BufferedImage normalTemplate;
     private final BufferedImage shinyTemplate;
+
+    // Squirtle release-shape timing probe template
+    private final BufferedImage squirtleShapeTemplate;
 
     private final ShinySparkleDetector squirtleSparkleDetector;
 
@@ -125,9 +139,11 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         if (pokedexNumber == 7) {
             this.normalTemplate = null;
             this.shinyTemplate = null;
+            this.squirtleShapeTemplate = loader.loadNormalFront(7);
         } else {
             this.normalTemplate = loader.loadNormalFront(pokedexNumber);
             this.shinyTemplate = loader.loadShinyFront(pokedexNumber);
+            this.squirtleShapeTemplate = null;
         }
 
         ShinySparkleDetector.Config sparkleConfig = new ShinySparkleDetector.Config();
@@ -444,14 +460,86 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             return SquirtleSparkleRouteResult.noDecision();
         }
 
-        log("Squirtle sparkle route: starting sparkle detector now.");
+        log("Squirtle sparkle route: starting first sparkle detector pass.");
 
-        Path sparkleDebugDir = attemptDir.resolve("sparkle-analysis");
+        SquirtleSparklePassResult firstPass = runSquirtleSparklePass(attemptDir, "pass1");
+        if (!running.get()) {
+            return SquirtleSparkleRouteResult.noDecision();
+        }
+
+        if (firstPass.releaseSeen) {
+            log(String.format(
+                    Locale.US,
+                    "Squirtle sparkle route: first pass contained Squirtle release shape | bestCheckFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
+                    firstPass.releaseCheckFrameIndex,
+                    firstPass.releaseCheckBestCombined,
+                    firstPass.releaseCheckBestColor,
+                    firstPass.releaseCheckBestGray
+            ));
+
+            return new SquirtleSparkleRouteResult(
+                    firstPass.sparkleResult != null && firstPass.sparkleResult.isLikelyShiny() ? Decision.SHINY : Decision.NOT_SHINY,
+                    blackResult.detected,
+                    sceneResult.detected,
+                    sceneResult.averageBrightness,
+                    sceneResult.changedRatio,
+                    firstPass.sparkleResult
+            );
+        }
+
+        log(String.format(
+                Locale.US,
+                "Squirtle sparkle route: first pass did NOT contain Squirtle release shape | bestCheckFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
+                firstPass.releaseCheckFrameIndex,
+                firstPass.releaseCheckBestCombined,
+                firstPass.releaseCheckBestColor,
+                firstPass.releaseCheckBestGray
+        ));
+        log("Squirtle sparkle route: pressing A once and rerunning sparkle detector.");
+
+        tapARepeated(SQUIRTLE_RETRY_ADVANCE_PRESSES, SQUIRTLE_RETRY_ADVANCE_GAP_MS);
+        if (!running.get()) {
+            return SquirtleSparkleRouteResult.noDecision();
+        }
+        keys.sleepMs(SQUIRTLE_RETRY_ADVANCE_GAP_MS);
+        if (!running.get()) {
+            return SquirtleSparkleRouteResult.noDecision();
+        }
+
+        SquirtleSparklePassResult secondPass = runSquirtleSparklePass(attemptDir, "pass2");
+        if (!running.get()) {
+            return SquirtleSparkleRouteResult.noDecision();
+        }
+
+        log(String.format(
+                Locale.US,
+                "Squirtle sparkle route: second pass release-shape result | releaseSeen=%s | bestCheckFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
+                secondPass.releaseSeen,
+                secondPass.releaseCheckFrameIndex,
+                secondPass.releaseCheckBestCombined,
+                secondPass.releaseCheckBestColor,
+                secondPass.releaseCheckBestGray
+        ));
+
+        return new SquirtleSparkleRouteResult(
+                secondPass.sparkleResult != null && secondPass.sparkleResult.isLikelyShiny() ? Decision.SHINY : Decision.NOT_SHINY,
+                blackResult.detected,
+                sceneResult.detected,
+                sceneResult.averageBrightness,
+                sceneResult.changedRatio,
+                secondPass.sparkleResult
+        );
+    }
+
+    private SquirtleSparklePassResult runSquirtleSparklePass(Path attemptDir, String passLabel) {
+        log("Squirtle sparkle route: starting sparkle detector now (" + passLabel + ").");
+
+        Path sparkleDebugDir = attemptDir.resolve("sparkle-analysis-" + passLabel);
         ensureDebugDirExists(sparkleDebugDir);
         log("Squirtle sparkle route: sparkle debug dir = " + sparkleDebugDir.toAbsolutePath());
 
         BufferedImage preDetectionFrame = state.getFrameSourceOrThrow().capture();
-        saveImage(attemptDir.resolve("sparkle_pre_detection_frame.png"), preDetectionFrame);
+        saveImage(attemptDir.resolve("sparkle_pre_detection_frame_" + passLabel + ".png"), preDetectionFrame);
 
         Rectangle localRoi = buildFullFrameLocalRoi(preDetectionFrame);
         log(String.format(
@@ -466,25 +554,120 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
                 sparkleDebugDir
         );
 
-        if (DEBUG_SAVE_CHECK_FRAMES) {
+        BufferedImage postDetectionFrame = state.getFrameSourceOrThrow().capture();
+        saveImage(attemptDir.resolve("sparkle_post_detection_frame_" + passLabel + ".png"), postDetectionFrame);
+
+        SquirtleReleaseCheckResult releaseCheck = checkForSquirtleReleaseShape(
+                attemptDir,
+                passLabel,
+                postDetectionFrame
+        );
+
+        if (DEBUG_SAVE_CHECK_FRAMES && sparkleResult != null) {
             BufferedImage afterDetectionFrame = state.getFrameSourceOrThrow().capture();
             saveSquirtleSparkleFrame(
                     attemptDir,
                     afterDetectionFrame,
-                    "sparkle_final",
+                    "sparkle_final_" + passLabel,
                     sparkleResult
             );
         }
 
-        Decision finalDecision = sparkleResult.isLikelyShiny() ? Decision.SHINY : Decision.NOT_SHINY;
+        return new SquirtleSparklePassResult(
+                sparkleResult,
+                releaseCheck.releaseSeen,
+                releaseCheck.bestCombined,
+                releaseCheck.bestColor,
+                releaseCheck.bestGray,
+                releaseCheck.bestFrameIndex
+        );
+    }
 
-        return new SquirtleSparkleRouteResult(
-                finalDecision,
-                blackResult.detected,
-                sceneResult.detected,
-                sceneResult.averageBrightness,
-                sceneResult.changedRatio,
-                sparkleResult
+    private SquirtleReleaseCheckResult checkForSquirtleReleaseShape(
+            Path attemptDir,
+            String passLabel,
+            BufferedImage firstFrame
+    ) {
+        if (squirtleShapeTemplate == null) {
+            log("Squirtle release-shape check skipped: template unavailable.");
+            return SquirtleReleaseCheckResult.notSeen();
+        }
+
+        double bestCombined = Double.NEGATIVE_INFINITY;
+        double bestColor = Double.NEGATIVE_INFINITY;
+        double bestGray = Double.NEGATIVE_INFINITY;
+        int bestFrameIndex = -1;
+
+        for (int i = 0; i < SQUIRTLE_RELEASE_CHECK_FRAMES && running.get(); i++) {
+            BufferedImage frame = (i == 0 && firstFrame != null)
+                    ? firstFrame
+                    : state.getFrameSourceOrThrow().capture();
+
+            int frameIndex = i + 1;
+
+            double combined = TemplateMatcher.findBestCombinedMatchScore(frame, squirtleShapeTemplate, MATCH_STRIDE);
+            double color = TemplateMatcher.findBestColorMatchScore(frame, squirtleShapeTemplate, MATCH_STRIDE);
+            double gray = TemplateMatcher.findBestMatchScore(frame, squirtleShapeTemplate, MATCH_STRIDE);
+
+            if (DEBUG_VERBOSE_SCORES) {
+                log(String.format(
+                        Locale.US,
+                        "Squirtle release-check %s frame %d/%d | combined=%.4f | color=%.4f | gray=%.4f",
+                        passLabel,
+                        frameIndex,
+                        SQUIRTLE_RELEASE_CHECK_FRAMES,
+                        combined,
+                        color,
+                        gray
+                ));
+            }
+
+            if (DEBUG_SAVE_CHECK_FRAMES) {
+                saveSquirtleReleaseCheckFrame(
+                        attemptDir,
+                        frame,
+                        passLabel,
+                        frameIndex,
+                        combined,
+                        color,
+                        gray
+                );
+            }
+
+            if (combined > bestCombined
+                    || (combined == bestCombined && color > bestColor)
+                    || (combined == bestCombined && color == bestColor && gray > bestGray)) {
+                bestCombined = combined;
+                bestColor = color;
+                bestGray = gray;
+                bestFrameIndex = frameIndex;
+            }
+
+            boolean releaseSeen = combined >= SQUIRTLE_RELEASE_SHAPE_COMBINED_THRESHOLD
+                    || color >= SQUIRTLE_RELEASE_SHAPE_COLOR_THRESHOLD
+                    || gray >= SQUIRTLE_RELEASE_SHAPE_GRAY_THRESHOLD;
+
+            if (releaseSeen) {
+                return new SquirtleReleaseCheckResult(
+                        true,
+                        combined,
+                        color,
+                        gray,
+                        frameIndex
+                );
+            }
+
+            if (i < SQUIRTLE_RELEASE_CHECK_FRAMES - 1) {
+                keys.sleepMs(SQUIRTLE_RELEASE_CHECK_GAP_MS);
+            }
+        }
+
+        return new SquirtleReleaseCheckResult(
+                false,
+                bestCombined == Double.NEGATIVE_INFINITY ? 0.0 : bestCombined,
+                bestColor == Double.NEGATIVE_INFINITY ? 0.0 : bestColor,
+                bestGray == Double.NEGATIVE_INFINITY ? 0.0 : bestGray,
+                bestFrameIndex
         );
     }
 
@@ -961,6 +1144,9 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
     private void saveTemplateDebugImages() {
         if (pokedexNumber == 7) {
+            if (squirtleShapeTemplate != null) {
+                saveImage(debugRootDir.resolve("template_squirtle_shape_probe.png"), squirtleShapeTemplate);
+            }
             return;
         }
 
@@ -1056,6 +1242,28 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
                 df.format(result.getScore()),
                 result.getSparkleEvents(),
                 result.getAnalyzedFrames()
+        );
+        saveImage(attemptDir.resolve(filename), frame);
+    }
+
+    private void saveSquirtleReleaseCheckFrame(
+            Path attemptDir,
+            BufferedImage frame,
+            String passLabel,
+            int frameIndex,
+            double combined,
+            double color,
+            double gray
+    ) {
+        DecimalFormat df = new DecimalFormat("0.0000");
+        String filename = String.format(
+                Locale.US,
+                "squirtle_release_check_%s_%02d__combined_%s__color_%s__gray_%s.png",
+                passLabel,
+                frameIndex,
+                df.format(combined),
+                df.format(color),
+                df.format(gray)
         );
         saveImage(attemptDir.resolve(filename), frame);
     }
@@ -1176,6 +1384,57 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
         private static BattleSceneWatchResult notDetected() {
             return new BattleSceneWatchResult(false, -1, 0.0, 0.0);
+        }
+    }
+
+    private static final class SquirtleReleaseCheckResult {
+        private final boolean releaseSeen;
+        private final double bestCombined;
+        private final double bestColor;
+        private final double bestGray;
+        private final int bestFrameIndex;
+
+        private SquirtleReleaseCheckResult(
+                boolean releaseSeen,
+                double bestCombined,
+                double bestColor,
+                double bestGray,
+                int bestFrameIndex
+        ) {
+            this.releaseSeen = releaseSeen;
+            this.bestCombined = bestCombined;
+            this.bestColor = bestColor;
+            this.bestGray = bestGray;
+            this.bestFrameIndex = bestFrameIndex;
+        }
+
+        private static SquirtleReleaseCheckResult notSeen() {
+            return new SquirtleReleaseCheckResult(false, 0.0, 0.0, 0.0, -1);
+        }
+    }
+
+    private static final class SquirtleSparklePassResult {
+        private final SparkleDetectionResult sparkleResult;
+        private final boolean releaseSeen;
+        private final double releaseCheckBestCombined;
+        private final double releaseCheckBestColor;
+        private final double releaseCheckBestGray;
+        private final int releaseCheckFrameIndex;
+
+        private SquirtleSparklePassResult(
+                SparkleDetectionResult sparkleResult,
+                boolean releaseSeen,
+                double releaseCheckBestCombined,
+                double releaseCheckBestColor,
+                double releaseCheckBestGray,
+                int releaseCheckFrameIndex
+        ) {
+            this.sparkleResult = sparkleResult;
+            this.releaseSeen = releaseSeen;
+            this.releaseCheckBestCombined = releaseCheckBestCombined;
+            this.releaseCheckBestColor = releaseCheckBestColor;
+            this.releaseCheckBestGray = releaseCheckBestGray;
+            this.releaseCheckFrameIndex = releaseCheckFrameIndex;
         }
     }
 
