@@ -82,11 +82,14 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private static final double SQUIRTLE_BATTLE_SCENE_MIN_BRIGHTNESS = 28.0;
     private static final double SQUIRTLE_BATTLE_SCENE_MIN_CHANGED_RATIO = 0.10;
     private static final int SQUIRTLE_BATTLE_SCENE_PIXEL_DELTA_THRESHOLD = 28;
+    private static final double SQUIRTLE_BATTLE_SCENE_FALLBACK_BRIGHTNESS_ONLY_THRESHOLD = 150.0;
 
     // Advance after black screen, then verify battle scene, then advance farther to reveal
     private static final int SQUIRTLE_POST_SCENE_ADVANCE_PRESSES = 4;
-    private static final long SQUIRTLE_POST_SCENE_ADVANCE_GAP_MS = 180;
-    private static final long SQUIRTLE_SPARKLE_START_DELAY_MS = 300;
+    private static final long SQUIRTLE_POST_SCENE_ADVANCE_GAP_MS = 120;
+    private static final int SQUIRTLE_REVEAL_ADVANCE_PRESSES = 2;
+    private static final long SQUIRTLE_REVEAL_ADVANCE_GAP_MS = 120;
+    private static final long SQUIRTLE_SPARKLE_START_DELAY_MS = 0;
     private static final long SQUIRTLE_POST_DETECTION_RESET_DELAY_MS = 1000;
 
     // Fallback quick re-check if black screen is missed the first time
@@ -494,25 +497,12 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
     private void advanceSquirtleBattlePastIntro() {
         log("Squirtle sparkle route: advancing farther into battle intro before battle-scene check.");
-
-        for (int i = 0; i < SQUIRTLE_POST_SCENE_ADVANCE_PRESSES && running.get(); i++) {
-            mashAFor(1000);
-            keys.sleepMs(SQUIRTLE_POST_SCENE_ADVANCE_GAP_MS);
-        }
+        tapARepeated(SQUIRTLE_POST_SCENE_ADVANCE_PRESSES, SQUIRTLE_POST_SCENE_ADVANCE_GAP_MS);
     }
 
     private void advanceFromBattleSceneToPokemonReveal() {
         log("Squirtle sparkle route: advancing from battle scene to pokemon reveal before sparkle detection.");
-
-        mashAFor(2000);
-        if (!running.get()) return;
-
-        keys.sleepMs(250);
-
-        //mashAFor(1200);
-        //if (!running.get()) return;
-
-        //keys.sleepMs(300);
+        tapARepeated(SQUIRTLE_REVEAL_ADVANCE_PRESSES, SQUIRTLE_REVEAL_ADVANCE_GAP_MS);
     }
 
     private BlackScreenWatchResult waitForBattleTransitionBlackScreen(Path attemptDir) {
@@ -604,6 +594,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private BattleSceneWatchResult waitForBattleSceneVisible(Path attemptDir, BufferedImage referenceBlackFrame) {
         long deadline = System.currentTimeMillis() + SQUIRTLE_BATTLE_SCENE_TIMEOUT_MS;
         int frameIndex = 0;
+        boolean hasBlackReference = referenceBlackFrame != null;
 
         while (running.get() && System.currentTimeMillis() < deadline) {
             keys.pressB();
@@ -611,13 +602,14 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             frameIndex++;
 
             double avgBrightness = averageBrightness(frame);
-            double changedRatio = referenceBlackFrame == null
-                    ? 0.0
-                    : changedRatio(referenceBlackFrame, frame, SQUIRTLE_BATTLE_SCENE_PIXEL_DELTA_THRESHOLD);
+            double changedRatio = hasBlackReference
+                    ? changedRatio(referenceBlackFrame, frame, SQUIRTLE_BATTLE_SCENE_PIXEL_DELTA_THRESHOLD)
+                    : 0.0;
 
-            boolean battleSceneDetected =
-                    avgBrightness >= SQUIRTLE_BATTLE_SCENE_MIN_BRIGHTNESS
-                            && changedRatio >= SQUIRTLE_BATTLE_SCENE_MIN_CHANGED_RATIO;
+            boolean battleSceneDetected = hasBlackReference
+                    ? (avgBrightness >= SQUIRTLE_BATTLE_SCENE_MIN_BRIGHTNESS
+                            && changedRatio >= SQUIRTLE_BATTLE_SCENE_MIN_CHANGED_RATIO)
+                    : (avgBrightness >= SQUIRTLE_BATTLE_SCENE_FALLBACK_BRIGHTNESS_ONLY_THRESHOLD);
 
             if (DEBUG_VERBOSE_SCORES) {
                 log(String.format(
@@ -712,6 +704,15 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private void pressLeft() {
         keys.left();
         keys.sleepMs(TAP_GAP_MS);
+    }
+
+    private void tapARepeated(int count, long gapMs) {
+        for (int i = 0; i < count && running.get(); i++) {
+            keys.pressA();
+            if (i < count - 1) {
+                keys.sleepMs(gapMs);
+            }
+        }
     }
 
     private ShinyCheckWindowResult runShinyDecisionWindow(Path attemptDir) {
