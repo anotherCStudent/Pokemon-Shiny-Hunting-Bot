@@ -1,12 +1,16 @@
 package methods.gen3;
 
+import java.awt.Graphics2D;
 import java.awt.Rectangle;
 import java.awt.Toolkit;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -93,12 +97,11 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private static final long SQUIRTLE_POST_DETECTION_RESET_DELAY_MS = 1000;
 
     // First-pass timing probe:
-    // if Squirtle's released shape is NOT seen after the first sparkle run,
-    // press A once, wait briefly, then rerun sparkle detection.
+    // run sparkle detector, then inspect those same captured frames for Squirtle BACK-sprite shape.
+    // If shape is NOT seen, ignore first-pass burst result completely, press A once, rerun detector.
+    // Only the second pass is allowed to count purely off the normal burst rule.
     private static final int SQUIRTLE_RETRY_ADVANCE_PRESSES = 1;
     private static final long SQUIRTLE_RETRY_ADVANCE_GAP_MS = 150;
-    private static final int SQUIRTLE_RELEASE_CHECK_FRAMES = 3;
-    private static final long SQUIRTLE_RELEASE_CHECK_GAP_MS = 80;
     private static final double SQUIRTLE_RELEASE_SHAPE_COMBINED_THRESHOLD = 0.54;
     private static final double SQUIRTLE_RELEASE_SHAPE_COLOR_THRESHOLD = 0.48;
     private static final double SQUIRTLE_RELEASE_SHAPE_GRAY_THRESHOLD = 0.56;
@@ -119,7 +122,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private final BufferedImage normalTemplate;
     private final BufferedImage shinyTemplate;
 
-    // Squirtle release-shape timing probe template
+    // Squirtle timing-probe template: BACK sprite only
     private final BufferedImage squirtleShapeTemplate;
 
     private final ShinySparkleDetector squirtleSparkleDetector;
@@ -139,7 +142,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         if (pokedexNumber == 7) {
             this.normalTemplate = null;
             this.shinyTemplate = null;
-            this.squirtleShapeTemplate = loader.loadNormalFront(7);
+            this.squirtleShapeTemplate = loadSquirtleBackShapeTemplate(projectDir, loader);
         } else {
             this.normalTemplate = loader.loadNormalFront(pokedexNumber);
             this.shinyTemplate = loader.loadShinyFront(pokedexNumber);
@@ -177,9 +180,9 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             sparkleConfig.decisionThreshold = 0.90;
         }
 
-        // Platform-specific burst rules (UPDATED):
+        // Platform-specific burst rules:
         // - Switch: require 3 consecutive bursts (hard gate)
-        // - GBA emulator: require 5 consecutive bursts (harder), DO NOT ignore early pairs
+        // - GBA emulator: require 5 consecutive bursts
         sparkleConfig.ignorePairsBefore = 0;
 
         if (switchMode) {
@@ -460,25 +463,30 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             return SquirtleSparkleRouteResult.noDecision();
         }
 
-        log("Squirtle sparkle route: starting first sparkle detector pass.");
-
+        // FIRST PASS = timing probe
+        // Burst result only matters if BACK-sprite shape was seen in the same captured pass frames.
         SquirtleSparklePassResult firstPass = runSquirtleSparklePass(attemptDir, "pass1");
         if (!running.get()) {
             return SquirtleSparkleRouteResult.noDecision();
         }
 
+        log(String.format(
+                Locale.US,
+                "Squirtle sparkle route: first pass release-shape result | releaseSeen=%s | bestFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
+                firstPass.releaseSeen,
+                firstPass.releaseCheckFrameIndex,
+                firstPass.releaseCheckBestCombined,
+                firstPass.releaseCheckBestColor,
+                firstPass.releaseCheckBestGray
+        ));
+
         if (firstPass.releaseSeen) {
-            log(String.format(
-                    Locale.US,
-                    "Squirtle sparkle route: first pass contained Squirtle release shape | bestCheckFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
-                    firstPass.releaseCheckFrameIndex,
-                    firstPass.releaseCheckBestCombined,
-                    firstPass.releaseCheckBestColor,
-                    firstPass.releaseCheckBestGray
-            ));
+            Decision firstDecision = firstPass.sparkleResult != null && firstPass.sparkleResult.isLikelyShiny()
+                    ? Decision.SHINY
+                    : Decision.NOT_SHINY;
 
             return new SquirtleSparkleRouteResult(
-                    firstPass.sparkleResult != null && firstPass.sparkleResult.isLikelyShiny() ? Decision.SHINY : Decision.NOT_SHINY,
+                    firstDecision,
                     blackResult.detected,
                     sceneResult.detected,
                     sceneResult.averageBrightness,
@@ -487,25 +495,22 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
             );
         }
 
-        log(String.format(
-                Locale.US,
-                "Squirtle sparkle route: first pass did NOT contain Squirtle release shape | bestCheckFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
-                firstPass.releaseCheckFrameIndex,
-                firstPass.releaseCheckBestCombined,
-                firstPass.releaseCheckBestColor,
-                firstPass.releaseCheckBestGray
-        ));
+        // No release-shape match on first pass:
+        // ignore first-pass burst result completely, press A once, rerun detector.
+        log("Squirtle sparkle route: first pass did not show Squirtle back-sprite shape. Ignoring first-pass burst result.");
         log("Squirtle sparkle route: pressing A once and rerunning sparkle detector.");
 
         tapARepeated(SQUIRTLE_RETRY_ADVANCE_PRESSES, SQUIRTLE_RETRY_ADVANCE_GAP_MS);
         if (!running.get()) {
             return SquirtleSparkleRouteResult.noDecision();
         }
+
         keys.sleepMs(SQUIRTLE_RETRY_ADVANCE_GAP_MS);
         if (!running.get()) {
             return SquirtleSparkleRouteResult.noDecision();
         }
 
+        // SECOND PASS = real sparkle decision
         SquirtleSparklePassResult secondPass = runSquirtleSparklePass(attemptDir, "pass2");
         if (!running.get()) {
             return SquirtleSparkleRouteResult.noDecision();
@@ -513,7 +518,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
 
         log(String.format(
                 Locale.US,
-                "Squirtle sparkle route: second pass release-shape result | releaseSeen=%s | bestCheckFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
+                "Squirtle sparkle route: second pass release-shape result | releaseSeen=%s | bestFrame=%d | combined=%.4f | color=%.4f | gray=%.4f",
                 secondPass.releaseSeen,
                 secondPass.releaseCheckFrameIndex,
                 secondPass.releaseCheckBestCombined,
@@ -521,8 +526,12 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
                 secondPass.releaseCheckBestGray
         ));
 
+        Decision secondDecision = secondPass.sparkleResult != null && secondPass.sparkleResult.isLikelyShiny()
+                ? Decision.SHINY
+                : Decision.NOT_SHINY;
+
         return new SquirtleSparkleRouteResult(
-                secondPass.sparkleResult != null && secondPass.sparkleResult.isLikelyShiny() ? Decision.SHINY : Decision.NOT_SHINY,
+                secondDecision,
                 blackResult.detected,
                 sceneResult.detected,
                 sceneResult.averageBrightness,
@@ -548,19 +557,22 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
                 localRoi.x, localRoi.y, localRoi.width, localRoi.height
         ));
 
+        List<BufferedImage> capturedFrames = new ArrayList<>();
+
         SparkleDetectionResult sparkleResult = squirtleSparkleDetector.detect(
-                () -> state.getFrameSourceOrThrow().capture(),
+                () -> {
+                    BufferedImage frame = state.getFrameSourceOrThrow().capture();
+                    capturedFrames.add(copyImage(frame));
+                    return frame;
+                },
                 localRoi,
                 sparkleDebugDir
         );
 
-        BufferedImage postDetectionFrame = state.getFrameSourceOrThrow().capture();
-        saveImage(attemptDir.resolve("sparkle_post_detection_frame_" + passLabel + ".png"), postDetectionFrame);
-
-        SquirtleReleaseCheckResult releaseCheck = checkForSquirtleReleaseShape(
+        SquirtleReleaseCheckResult releaseCheck = checkForSquirtleReleaseShapeFromFrames(
                 attemptDir,
                 passLabel,
-                postDetectionFrame
+                capturedFrames
         );
 
         if (DEBUG_SAVE_CHECK_FRAMES && sparkleResult != null) {
@@ -583,10 +595,10 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         );
     }
 
-    private SquirtleReleaseCheckResult checkForSquirtleReleaseShape(
+    private SquirtleReleaseCheckResult checkForSquirtleReleaseShapeFromFrames(
             Path attemptDir,
             String passLabel,
-            BufferedImage firstFrame
+            List<BufferedImage> frames
     ) {
         if (squirtleShapeTemplate == null) {
             log("Squirtle release-shape check skipped: template unavailable.");
@@ -598,10 +610,11 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
         double bestGray = Double.NEGATIVE_INFINITY;
         int bestFrameIndex = -1;
 
-        for (int i = 0; i < SQUIRTLE_RELEASE_CHECK_FRAMES && running.get(); i++) {
-            BufferedImage frame = (i == 0 && firstFrame != null)
-                    ? firstFrame
-                    : state.getFrameSourceOrThrow().capture();
+        for (int i = 0; i < frames.size() && running.get(); i++) {
+            BufferedImage frame = frames.get(i);
+            if (frame == null) {
+                continue;
+            }
 
             int frameIndex = i + 1;
 
@@ -615,7 +628,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
                         "Squirtle release-check %s frame %d/%d | combined=%.4f | color=%.4f | gray=%.4f",
                         passLabel,
                         frameIndex,
-                        SQUIRTLE_RELEASE_CHECK_FRAMES,
+                        frames.size(),
                         combined,
                         color,
                         gray
@@ -656,10 +669,6 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
                         frameIndex
                 );
             }
-
-            if (i < SQUIRTLE_RELEASE_CHECK_FRAMES - 1) {
-                keys.sleepMs(SQUIRTLE_RELEASE_CHECK_GAP_MS);
-            }
         }
 
         return new SquirtleReleaseCheckResult(
@@ -669,6 +678,67 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
                 bestGray == Double.NEGATIVE_INFINITY ? 0.0 : bestGray,
                 bestFrameIndex
         );
+    }
+
+    private BufferedImage loadSquirtleBackShapeTemplate(Path projectDir, FrlgSpriteLoader loader) {
+        // Try reflective loader support first so we don't require changing FrlgSpriteLoader if it already has a back-loader.
+        try {
+            Method method = loader.getClass().getMethod("loadNormalBack", int.class);
+            Object result = method.invoke(loader, 7);
+            if (result instanceof BufferedImage image && image != null) {
+                log("Loaded Squirtle back sprite template via FrlgSpriteLoader.loadNormalBack(7).");
+                return image;
+            }
+        } catch (Throwable ignored) {
+            // Fall through to direct-path attempts.
+        }
+
+        Path[] candidates = new Path[] {
+                projectDir.resolve("sprites").resolve("sprites").resolve("pokemon").resolve("versions").resolve("generation-iii").resolve("firered-leafgreen").resolve("back").resolve("7.png"),
+                projectDir.resolve("sprites").resolve("sprites").resolve("pokemon").resolve("versions").resolve("generation-iii").resolve("firered-leafgreen").resolve("back").resolve("007.png"),
+                projectDir.resolve("sprites").resolve("sprites").resolve("pokemon").resolve("versions").resolve("generation-iii").resolve("ruby-sapphire").resolve("back").resolve("7.png"),
+                projectDir.resolve("sprites").resolve("sprites").resolve("pokemon").resolve("versions").resolve("generation-iii").resolve("ruby-sapphire").resolve("back").resolve("007.png"),
+                projectDir.resolve("sprites").resolve("sprites").resolve("pokemon").resolve("versions").resolve("generation-iii").resolve("emerald").resolve("back").resolve("7.png"),
+                projectDir.resolve("sprites").resolve("sprites").resolve("pokemon").resolve("versions").resolve("generation-iii").resolve("emerald").resolve("back").resolve("007.png")
+        };
+
+        for (Path candidate : candidates) {
+            try {
+                if (Files.exists(candidate)) {
+                    BufferedImage image = ImageIO.read(candidate.toFile());
+                    if (image != null) {
+                        log("Loaded Squirtle back sprite template from: " + candidate.toAbsolutePath());
+                        return image;
+                    }
+                }
+            } catch (IOException ignored) {
+                // Try next candidate.
+            }
+        }
+
+        throw new IllegalStateException(
+                "Could not load Squirtle back sprite template. Add/load a back sprite path or expose loadNormalBack(7) in FrlgSpriteLoader."
+        );
+    }
+
+    private BufferedImage copyImage(BufferedImage src) {
+        if (src == null) {
+            return null;
+        }
+
+        int type = src.getType();
+        if (type == BufferedImage.TYPE_CUSTOM || type == 0) {
+            type = BufferedImage.TYPE_INT_ARGB;
+        }
+
+        BufferedImage copy = new BufferedImage(src.getWidth(), src.getHeight(), type);
+        Graphics2D g = copy.createGraphics();
+        try {
+            g.drawImage(src, 0, 0, null);
+        } finally {
+            g.dispose();
+        }
+        return copy;
     }
 
     private Rectangle buildFullFrameLocalRoi(BufferedImage frame) {
@@ -1145,7 +1215,7 @@ public class Gen3FrlgStarterMethod implements HuntMethod {
     private void saveTemplateDebugImages() {
         if (pokedexNumber == 7) {
             if (squirtleShapeTemplate != null) {
-                saveImage(debugRootDir.resolve("template_squirtle_shape_probe.png"), squirtleShapeTemplate);
+                saveImage(debugRootDir.resolve("template_squirtle_back_shape_probe.png"), squirtleShapeTemplate);
             }
             return;
         }
